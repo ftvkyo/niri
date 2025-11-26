@@ -4,7 +4,9 @@ In this section you can configure input devices like keyboard and mouse, and som
 
 There's a section for each device type: `keyboard`, `touchpad`, `mouse`, `trackpoint`, `trackball`, `tablet`, `touch`.
 Settings in those sections will apply to every device of that type.
-Currently, there's no way to configure specific devices individually (but that is planned).
+Currently, there's no way to configure specific `touchpad`, `touch`, `tablet` or `trackpoint` devices
+individually (but that is planned).
+However, you can configure specific `keyboard` and `mouse` devices by name.
 
 All settings at a glance:
 
@@ -285,6 +287,47 @@ Valid output names are the same as the ones used for output configuration.
 Setting specific to `tablet`:
 
 - `map-to-focused-output`: <sup>Since: 26.04</sup> will map the tablet to the focused output, takes precedence over `map-to-output`.
+
+> [!TIP]
+>
+> <sup>Since: next release</sup>
+>
+> It is possible to configure specific `keyboard` and `mouse` devices by name.
+>
+> Any non‑device‑specific settings will apply as a fallback when no matching device‑specific block exists:
+>
+> ```kdl
+> input {
+>     keyboard {
+>         xkb {
+>             layout "us"
+>         }
+>     }
+>
+>     // Configure this specific keyboard with a different layout.
+>     keyboard "AT Translated Set 2 keyboard" {
+>         xkb {
+>             layout "us,ru"
+>             options "grp:alt_shift_toggle"
+>         }
+>     }
+>
+>     mouse {
+>         natural-scroll
+>         accel-speed 0.5
+>     }
+>
+>     // Configure this specific mouse with different settings.
+>     mouse "Logitech G Pro" {
+>         accel-speed -0.3
+>         accel-profile "flat"
+>     }
+> }
+> ```
+>
+> The device name is case-insensitive.
+> Device names are taken from libinput; you can find them by running `sudo libinput list-devices` or `sudo libinput debug-events`.
+> For keyboards without libinput support, check the evdev device name in the output of `libinput debug-events`.
 
 ### General Settings
 
