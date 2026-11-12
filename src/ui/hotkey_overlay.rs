@@ -568,6 +568,7 @@ fn key_name(screen_reader: bool, mod_key: ModKey, key: &Key) -> String {
 
     let pretty = match key.trigger {
         Trigger::Keysym(keysym) => prettify_keysym_name(screen_reader, &keysym_get_name(keysym)),
+        Trigger::Keycode(keycode) => format!("Keycode {}", keycode.raw()),
         Trigger::CompositorMod => mod_key_pretty.into(),
         Trigger::Modifier(modifier) => modifier_name(modifier).into(),
         Trigger::MouseLeft => String::from("Mouse Left"),

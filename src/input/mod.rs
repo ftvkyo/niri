@@ -747,6 +747,8 @@ impl State {
 
                 let is_locked = this.niri.is_locked();
                 let is_in_screenshot = this.niri.screenshot_ui.is_open();
+                // A virtual keyboard keymap can number its keys arbitrarily.
+                let is_physical_key = this.niri.virtual_keyboard_keymap.is_none();
                 let res = {
                     let config = this.niri.config.borrow();
                     let bindings = make_binds_iter(
@@ -766,6 +768,7 @@ impl State {
                         bindings,
                         mod_key,
                         key_code,
+                        is_physical_key,
                         modified,
                         raw,
                         pressed,
@@ -5055,6 +5058,7 @@ fn should_intercept_key<'a>(
     bindings: impl Iterator<Item = &'a Bind> + Clone,
     mod_key: ModKey,
     key_code: Keycode,
+    is_physical_key: bool,
     modified: Option<Keysym>,
     raw: &[Keysym],
     pressed: bool,
@@ -5073,6 +5077,7 @@ fn should_intercept_key<'a>(
     let bind = find_bind(
         bindings,
         mod_key,
+        is_physical_key.then_some(key_code),
         modified,
         raw,
         mods,
@@ -5126,6 +5131,7 @@ fn should_intercept_key<'a>(
 fn find_bind<'a, I: Iterator<Item = &'a Bind> + Clone>(
     bindings: I,
     mod_key: ModKey,
+    key_code: Option<Keycode>,
     modified: Option<Keysym>,
     raw: &[Keysym],
     mods: Modifiers,
@@ -5168,6 +5174,15 @@ fn find_bind<'a, I: Iterator<Item = &'a Bind> + Clone>(
             allow_inhibiting: false,
             hotkey_overlay_title: None,
         });
+    }
+
+    // A keycode bind is more specific than any keysym the key can produce.
+    if let Some(key_code) = key_code {
+        let trigger = Trigger::Keycode(key_code);
+        let matches = |bind: &&Bind| bind_matches_trigger(bind, trigger, mod_key, mods);
+        if let Some(bind) = bindings.clone().find(matches) {
+            return Some(bind.clone());
+        }
     }
 
     // A modifier key can trigger binds bound as the compositor mod key (`Mod`), by its own keysym
@@ -6077,6 +6092,7 @@ mod tests {
             bindings.0.iter(),
             ModKey::Super,
             CLOSE_KEY_CODE,
+            true,
             Some(CLOSE_KEYSYM),
             &[],
             pressed,
@@ -6537,5 +6553,35 @@ mod tests {
         // Only configs with match-device-group apply to the group.
         let group = ["Planck", "Planck Consumer Control"];
         assert_eq!(find("Planck Consumer Control", &group), None);
+    }
+
+    #[test]
+    fn keycode_bind_wins_over_keysym_bind() {
+        let config = Config::parse_mem(
+            r#"
+            binds {
+                Mod+S { close-window; }
+                Mod+Keycode:39 { focus-column-left; }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let binds = config.binds.0.iter();
+        let mods = Modifiers::SUPER;
+        let s = Some(Keysym::s);
+        let bind = find_bind(
+            binds,
+            ModKey::Super,
+            Some(Keycode::new(39)),
+            s,
+            &[],
+            mods,
+            false,
+        );
+        assert_eq!(
+            bind.map(|bind| bind.action),
+            Some(BoundAction::Press(Action::FocusColumnLeft))
+        );
     }
 }

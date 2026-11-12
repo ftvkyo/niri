@@ -9,7 +9,7 @@ use niri_ipc::{
 };
 use smithay::input::keyboard::keysyms::KEY_NoSymbol;
 use smithay::input::keyboard::xkb::{keysym_from_name, KEYSYM_CASE_INSENSITIVE, KEYSYM_NO_FLAGS};
-use smithay::input::keyboard::Keysym;
+use smithay::input::keyboard::{Keycode, Keysym};
 use tracing::warn;
 
 use crate::input::ModKey;
@@ -90,6 +90,8 @@ pub struct Key {
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Trigger {
     Keysym(Keysym),
+    /// A physical key, regardless of the layout.
+    Keycode(Keycode),
     CompositorMod,
     Modifier(ModKey),
     MouseLeft,
@@ -119,6 +121,12 @@ pub fn is_keysym_modifier(keysym: Keysym) -> bool {
     ModKey::from_keysym(keysym).is_some()
 }
 
+fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = s.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &s[prefix.len()..])
+}
+
 impl Trigger {
     pub fn is_modifier(self) -> bool {
         match self {
@@ -146,7 +154,10 @@ impl Trigger {
     pub fn is_keyboard(self) -> bool {
         matches!(
             self,
-            Trigger::Keysym(_) | Trigger::CompositorMod | Trigger::Modifier(_)
+            Trigger::Keysym(_)
+                | Trigger::Keycode(_)
+                | Trigger::CompositorMod
+                | Trigger::Modifier(_)
         )
     }
 
@@ -1360,6 +1371,12 @@ impl FromStr for Key {
             Trigger::Modifier(ModKey::IsoLevel3Shift)
         } else if key.eq_ignore_ascii_case("ISO_Level5_Shift") || key.eq_ignore_ascii_case("Mod3") {
             Trigger::Modifier(ModKey::IsoLevel5Shift)
+        } else if let Some(code) = strip_prefix_ignore_ascii_case(key, "Keycode:") {
+            // These are xkb keycodes like wev shows, which start at 8 (the evdev ones plus 8).
+            match code.parse() {
+                Ok(code) if code >= 8 => Trigger::Keycode(Keycode::new(code)),
+                _ => return Err(miette!("invalid keycode: {code}, must be a number from 8")),
+            }
         } else {
             let mut keysym = keysym_from_name(key, KEYSYM_CASE_INSENSITIVE);
 

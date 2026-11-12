@@ -630,7 +630,7 @@ impl ConfigPath {
 mod tests {
     use insta::{assert_debug_snapshot, assert_snapshot};
     use pretty_assertions::assert_eq;
-    use smithay::input::keyboard::Keysym;
+    use smithay::input::keyboard::{Keycode, Keysym};
 
     use super::*;
 
@@ -896,6 +896,19 @@ mod tests {
                 release: Action::ToggleOverview,
             }
         ));
+    }
+
+    #[test]
+    fn parse_keycode_binds() {
+        let key = |s: &str| s.parse::<Key>().ok().map(|key| key.trigger);
+        assert_eq!(
+            key("Mod+keycode:40"),
+            Some(Trigger::Keycode(Keycode::new(40)))
+        );
+
+        // xkb keycodes start at 8.
+        assert_eq!(key("Mod+Keycode:4"), None);
+        assert_eq!(key("Mod+Keycode:"), None);
     }
 
     #[test]

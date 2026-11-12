@@ -2569,3 +2569,80 @@ fn keyboard_devices() {
     let keyboard = f.niri().seat.get_keyboard().unwrap();
     assert!(keyboard.modifier_state().caps_lock);
 }
+
+#[test]
+fn keycode_binds() {
+    let c = r#"
+    input {
+        keyboard {
+            xkb {
+                layout "us,ru"
+                options "grp:lalt_toggle"
+            }
+        }
+    }
+
+    binds {
+        Mod+Keycode:39 { close-window; }
+    }
+    "#;
+
+    // A keycode bind triggers on its key in every layout, and only on its key.
+    assert_snapshot!(
+        run(c, "+LWIN +AC02 -AC02 -LWIN +LALT -LALT +LWIN +AC02 -AC02 +AC01 -AC01 -LWIN"),
+        @"
+    +LWIN 133 XK_Super_L
+        surface key pressed: 125
+        surface modifiers: depressed=64, latched=0, locked=0, group=0
+    +AC02  39 XK_s
+        niri test-action
+    -AC02  39 XK_s
+    -LWIN 133 XK_Super_L
+        surface key released: 125
+        surface modifiers: depressed=0, latched=0, locked=0, group=0
+    +LALT  64 XK_ISO_Next_Group
+        surface key pressed: 56
+        surface modifiers: depressed=0, latched=0, locked=0, group=1
+    -LALT  64 XK_ISO_Next_Group
+        surface key released: 56
+    +LWIN 133 XK_Super_L
+        surface key pressed: 125
+        surface modifiers: depressed=64, latched=0, locked=0, group=1
+    +AC02  39 XK_Cyrillic_yeru
+        niri test-action
+    -AC02  39 XK_Cyrillic_yeru
+    +AC01  38 XK_Cyrillic_ef
+        surface key pressed: 30
+    -AC01  38 XK_Cyrillic_ef
+        surface key released: 30
+    -LWIN 133 XK_Super_L
+        surface key released: 125
+        surface modifiers: depressed=0, latched=0, locked=0, group=1
+    "
+    );
+}
+
+#[test]
+fn keycode_binds_on_modifier_keys() {
+    let c = r#"
+    binds {
+        Keycode:37 { close-window; }
+        Ctrl+Keycode:105 { close-window; }
+    }
+    "#;
+
+    // The key's own modifier is held when it's pressed, so the bind needs to spell it out.
+    assert_snapshot!(run(c, "+LCTL -LCTL +RCTL -RCTL"), @"
+    +LCTL  37 XK_Control_L
+        surface key pressed: 29
+        surface modifiers: depressed=4, latched=0, locked=0, group=0
+    -LCTL  37 XK_Control_L
+        surface key released: 29
+        surface modifiers: depressed=0, latched=0, locked=0, group=0
+    +RCTL 105 XK_Control_R
+        niri test-action
+        surface modifiers: depressed=4, latched=0, locked=0, group=0
+    -RCTL 105 XK_Control_R
+        surface modifiers: depressed=0, latched=0, locked=0, group=0
+    ");
+}
