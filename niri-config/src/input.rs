@@ -33,8 +33,8 @@ pub struct Input {
 
 #[derive(knuffel::Decode, Debug, Default, PartialEq)]
 pub struct InputPart {
-    #[knuffel(child)]
-    pub keyboard: Option<KeyboardPart>,
+    #[knuffel(children(name = "keyboard"))]
+    pub keyboard: Vec<KeyboardSection>,
     #[knuffel(child)]
     pub touchpad: Option<Touchpad>,
     #[knuffel(child)]
@@ -63,9 +63,12 @@ pub struct InputPart {
 
 impl MergeWith<InputPart> for Input {
     fn merge_with(&mut self, part: &InputPart) {
+        for section in &part.keyboard {
+            self.keyboard.merge_with(&section.0);
+        }
+
         merge!(
             (self, part),
-            keyboard,
             disable_power_key_handling,
             workspace_auto_back_and_forth,
         );
@@ -97,6 +100,8 @@ pub struct Keyboard {
     pub repeat_rate: u8,
     pub track_layout: TrackLayout,
     pub numlock: bool,
+    /// Settings for specific keyboards, on top of the ones above.
+    pub devices: Vec<KeyboardDevice>,
 }
 
 impl Default for Keyboard {
@@ -108,14 +113,57 @@ impl Default for Keyboard {
             repeat_rate: 25,
             track_layout: Default::default(),
             numlock: Default::default(),
+            devices: Vec::new(),
         }
     }
 }
 
+impl Keyboard {
+    /// Finds the index of the settings for the keyboard with this name.
+    pub fn device_index(&self, name: &str) -> Option<usize> {
+        let mut devices = self.devices.iter();
+        devices.position(|device| device.name.eq_ignore_ascii_case(name))
+    }
+}
+
+/// Settings for a specific keyboard, matched by its name.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct KeyboardDevice {
+    pub name: String,
+    /// Whether these settings also apply to other devices in the same libinput device group.
+    pub match_device_group: bool,
+    /// Overrides for the fallback xkb settings.
+    pub xkb: XkbPart,
+}
+
+impl KeyboardDevice {
+    /// Resolves the xkb settings of this keyboard on top of the fallback ones.
+    pub fn xkb(&self, fallback: &Xkb) -> Xkb {
+        let mut xkb = fallback.clone();
+
+        // A file replaces the whole keymap, so an inherited one would override the settings of
+        // this keyboard.
+        if self.xkb != XkbPart::default() {
+            xkb.file = None;
+        }
+
+        xkb.merge_with(&self.xkb);
+        xkb
+    }
+}
+
+/// A `keyboard` section, either the fallback one or one for a specific keyboard.
+#[derive(Debug, PartialEq, Eq)]
+pub struct KeyboardSection(pub KeyboardPart);
+
 #[derive(knuffel::Decode, Debug, PartialEq, Eq)]
 pub struct KeyboardPart {
+    #[knuffel(argument)]
+    pub name: Option<String>,
     #[knuffel(child)]
-    pub xkb: Option<Xkb>,
+    pub match_device_group: Option<Flag>,
+    #[knuffel(child)]
+    pub xkb: Option<XkbPart>,
     #[knuffel(child, unwrap(argument))]
     pub repeat_delay: Option<u16>,
     #[knuffel(child, unwrap(argument))]
@@ -128,28 +176,70 @@ pub struct KeyboardPart {
 
 impl MergeWith<KeyboardPart> for Keyboard {
     fn merge_with(&mut self, part: &KeyboardPart) {
-        merge_clone!((self, part), xkb, repeat_delay, repeat_rate, track_layout);
-        merge!((self, part), numlock);
+        let Some(name) = &part.name else {
+            if let Some(xkb) = &part.xkb {
+                self.xkb = Xkb::from_part(xkb);
+            }
+            merge_clone!((self, part), repeat_delay, repeat_rate, track_layout);
+            merge!((self, part), numlock);
+            return;
+        };
+
+        let idx = self.device_index(name).unwrap_or_else(|| {
+            self.devices.push(KeyboardDevice {
+                name: name.clone(),
+                ..Default::default()
+            });
+            self.devices.len() - 1
+        });
+        let device = &mut self.devices[idx];
+
+        merge!((device, part), match_device_group);
+        merge_clone!((device, part), xkb);
     }
 }
 
-#[derive(knuffel::Decode, Debug, Default, PartialEq, Eq, Clone)]
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub struct Xkb {
-    #[knuffel(child, unwrap(argument), default)]
     pub rules: String,
-    #[knuffel(child, unwrap(argument), default)]
     pub model: String,
-    #[knuffel(child, unwrap(argument), default)]
     pub layout: String,
-    #[knuffel(child, unwrap(argument), default)]
     pub variant: String,
+    pub options: Option<String>,
+    pub file: Option<XkbFile>,
+}
+
+#[derive(knuffel::Decode, Debug, Default, PartialEq, Eq, Clone)]
+pub struct XkbPart {
+    #[knuffel(child, unwrap(argument))]
+    pub rules: Option<String>,
+    #[knuffel(child, unwrap(argument))]
+    pub model: Option<String>,
+    #[knuffel(child, unwrap(argument))]
+    pub layout: Option<String>,
+    #[knuffel(child, unwrap(argument))]
+    pub variant: Option<String>,
     #[knuffel(child, unwrap(argument))]
     pub options: Option<String>,
     #[knuffel(child, unwrap(argument))]
     pub file: Option<XkbFile>,
 }
 
+impl MergeWith<XkbPart> for Xkb {
+    fn merge_with(&mut self, part: &XkbPart) {
+        merge_clone!((self, part), rules, model, layout, variant);
+        merge_clone_opt!((self, part), options, file);
+    }
+}
+
 impl Xkb {
+    /// Creates xkb settings with only the ones set in `part`.
+    pub fn from_part(part: &XkbPart) -> Self {
+        let mut xkb = Self::default();
+        xkb.merge_with(part);
+        xkb
+    }
+
     pub fn to_xkb_config(&self) -> XkbConfig<'_> {
         XkbConfig {
             rules: &self.rules,
@@ -578,6 +668,36 @@ where
                 Ok(Self(None))
             }
         }
+    }
+}
+
+impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for KeyboardSection {
+    fn decode_node(
+        node: &knuffel::ast::SpannedNode<S>,
+        ctx: &mut knuffel::decode::Context<S>,
+    ) -> Result<Self, DecodeError<S>> {
+        let is_device = !node.arguments.is_empty();
+
+        for child in node.children() {
+            let name = &**child.node_name;
+
+            // The keymap is the only thing that can differ between keyboards, since the rest of
+            // the keyboard state is shared by the seat.
+            let message = match (name, is_device) {
+                ("xkb", _) | ("match-device-group", true) => continue,
+                ("match-device-group", false) => "requires a keyboard name",
+                (_, true) => "cannot be set for a specific keyboard",
+                (_, false) => continue,
+            };
+
+            ctx.emit_error(DecodeError::unexpected(
+                child,
+                "node",
+                format!("node `{name}` {message}"),
+            ));
+        }
+
+        KeyboardPart::decode_node(node, ctx).map(Self)
     }
 }
 

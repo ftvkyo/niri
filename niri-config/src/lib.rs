@@ -1146,6 +1146,71 @@ mod tests {
     }
 
     #[test]
+    fn parse_keyboard_devices() {
+        let parsed = do_parse(
+            r#"
+            input {
+                keyboard {
+                    xkb {
+                        layout "us,ru"
+                        options "grp:caps_toggle"
+                    }
+                }
+
+                keyboard "Moonlander" {
+                    xkb {
+                        variant "colemak_dh_ortho,"
+                    }
+                }
+
+                // Sections for the same keyboard merge like the fallback ones do.
+                keyboard "MOONLANDER" {
+                    match-device-group
+                }
+            }
+            "#,
+        );
+
+        let keyboard = &parsed.input.keyboard;
+        assert_eq!(keyboard.devices.len(), 1);
+
+        let device = &keyboard.devices[keyboard.device_index("moonlander").unwrap()];
+        assert!(device.match_device_group);
+
+        let xkb = device.xkb(&keyboard.xkb);
+        assert_eq!(xkb.layout, "us,ru");
+        assert_eq!(xkb.variant, "colemak_dh_ortho,");
+        assert_eq!(xkb.options.as_deref(), Some("grp:caps_toggle"));
+
+        assert_eq!(keyboard.device_index("Moonlander Consumer Control"), None);
+    }
+
+    #[test]
+    fn parse_keyboard_device_errors() {
+        assert_parse_error(
+            r#"
+            input {
+                keyboard "Moonlander" {
+                    repeat-rate 50
+                }
+            }
+            "#,
+            "node `repeat-rate` cannot be set for a specific keyboard",
+        );
+
+        assert_parse_error(
+            r#"
+            input {
+                keyboard {
+                    match-device-group
+                }
+            }
+            "#,
+            "node `match-device-group` requires a keyboard name",
+        );
+    }
+
+    #[test]
     fn parse() {
         let parsed = do_parse(
             r##"
@@ -1488,6 +1553,7 @@ mod tests {
                     repeat_rate: 25,
                     track_layout: Window,
                     numlock: false,
+                    devices: [],
                 },
                 touchpad: Touchpad {
                     off: false,
