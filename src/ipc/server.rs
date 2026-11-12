@@ -561,6 +561,33 @@ impl State {
         server.send_event(event);
     }
 
+    /// Notifies about the layouts only if their names changed, and otherwise about the index.
+    pub fn ipc_refresh_keyboard_layouts(&mut self) {
+        let keyboard = self.niri.seat.get_keyboard().unwrap();
+        let names: Vec<_> = keyboard.with_xkb_state(self, |context| {
+            let xkb = context.xkb().lock().unwrap();
+            let layouts = xkb.layouts();
+            layouts
+                .map(|layout| xkb.layout_name(layout).to_owned())
+                .collect()
+        });
+
+        let Some(server) = &self.niri.ipc_server else {
+            return;
+        };
+
+        let state = server.event_stream_state.borrow();
+        let current = state.keyboard_layouts.keyboard_layouts.as_ref();
+        let same_names = current.is_some_and(|current| current.names == names);
+        drop(state);
+
+        if same_names {
+            self.ipc_refresh_keyboard_layout_index();
+        } else {
+            self.ipc_keyboard_layouts_changed();
+        }
+    }
+
     pub fn ipc_refresh_keyboard_layout_index(&mut self) {
         let keyboard = self.niri.seat.get_keyboard().unwrap();
         let idx = keyboard.with_xkb_state(self, |context| {

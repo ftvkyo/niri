@@ -207,7 +207,8 @@ impl State {
         };
 
         let keyboard = self.niri.seat.get_keyboard().unwrap();
-        let restored = self.niri.configured_keymap.clone().is_some_and(|keymap| {
+        let keymap = self.niri.configured_keymaps.get(&self.niri.keyboard_config);
+        let restored = keymap.cloned().is_some_and(|keymap| {
             keyboard
                 .set_keymap_from_keymap_file(self, keymap)
                 .inspect_err(|err| warn!("error restoring configured keymap: {err:?}"))
@@ -215,12 +216,12 @@ impl State {
         });
 
         if !restored {
-            // Shouldn't happen unless there's an xkbcommon bug or configured_keymap somehow ends
-            // up none while a virtual keymap is active, but fall back to loading it from the
-            // config.
+            // Shouldn't happen unless there's an xkbcommon bug or the configured keymap somehow
+            // ends up missing while a virtual keymap is active, but fall back to loading it from
+            // the config.
             error!("failed to restore the configured keymap, reloading it from the config");
             self.niri.virtual_keyboard_keymap = Some(active);
-            self.niri.configured_keymap = None;
+            self.forget_configured_keymap();
             self.load_configured_keymap();
             return;
         }
@@ -229,20 +230,22 @@ impl State {
         self.ipc_keyboard_layouts_changed();
     }
 
-    /// Returns the configured keymap as XKB_KEYMAP_FORMAT_TEXT_V1.
-    fn configured_keymap(&mut self) -> KeymapFile {
-        if let Some(keymap) = &self.niri.configured_keymap {
+    /// Returns the configured keymap of the current physical keyboard as
+    /// XKB_KEYMAP_FORMAT_TEXT_V1.
+    pub fn configured_keymap(&mut self) -> KeymapFile {
+        let device = self.niri.keyboard_config;
+        if let Some(keymap) = self.niri.configured_keymaps.get(&device) {
             return keymap.clone();
         }
 
         // The seat has the configured keymap while no virtual keyboard keymap is active.
         if self.niri.virtual_keyboard_keymap.is_some() {
-            error!("virtual_keyboard_keymap must be None when resetting configured_keymap");
+            error!("virtual_keyboard_keymap must be None when caching the configured keymap");
         }
 
         let keyboard = self.niri.seat.get_keyboard().unwrap();
         let keymap = keyboard.keymap_file();
-        self.niri.configured_keymap = Some(keymap.clone());
+        self.niri.configured_keymaps.insert(device, keymap.clone());
         keymap
     }
 }

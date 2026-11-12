@@ -22,12 +22,21 @@ pub trait NiriInputDevice: input::Device {
     // but it's not clear that this matters in practice?
     // it might be more obvious once we implement it for libinput
     fn output(&self, state: &State) -> Option<Output>;
+
+    /// Config of this keyboard, as an index into `input.keyboard.devices`.
+    fn keyboard_device_config(&self, _state: &State) -> Option<usize> {
+        None
+    }
 }
 
 impl NiriInputDevice for libinput::Device {
     fn output(&self, _state: &State) -> Option<Output> {
         // FIXME: Allow specifying the output per-device?
         None
+    }
+
+    fn keyboard_device_config(&self, state: &State) -> Option<usize> {
+        state.niri.keyboard_device_configs.get(self).copied()
     }
 }
 

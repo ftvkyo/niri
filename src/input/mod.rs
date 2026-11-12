@@ -283,6 +283,8 @@ impl State {
                     {
                         device.led_update(led_state.into());
                     }
+
+                    self.refresh_keyboard_device_configs();
                 }
 
                 if device.has_capability(input::DeviceCapability::Touch) {
@@ -299,9 +301,37 @@ impl State {
                 self.niri.touch.remove(device);
                 self.niri.tablets.remove(device);
                 self.niri.devices.remove(device);
+
+                if device.has_capability(input::DeviceCapability::Keyboard) {
+                    self.refresh_keyboard_device_configs();
+                }
             }
             _ => (),
         }
+    }
+
+    /// Matches the libinput keyboards against the keyboard device configs.
+    pub fn refresh_keyboard_device_configs(&mut self) {
+        let keyboards: Vec<_> = self
+            .niri
+            .devices
+            .iter()
+            .filter(|device| device.has_capability(input::DeviceCapability::Keyboard))
+            .map(|device| (device, device.name(), device.device_group()))
+            .collect();
+
+        let config = self.niri.config.borrow();
+        let config = &config.input.keyboard;
+
+        let matched = keyboards.iter().filter_map(|(device, name, group)| {
+            let group = keyboards
+                .iter()
+                .filter(|(_, _, other)| other == group)
+                .map(|(_, name, _)| &**name);
+            let idx = find_keyboard_device_config(config, name, group)?;
+            Some(((*device).clone(), idx))
+        });
+        self.niri.keyboard_device_configs = matched.collect();
     }
 
     fn on_device_added(&mut self, device: impl Device) {
@@ -462,10 +492,20 @@ impl State {
     {
         let device = event.device();
         let virtual_keyboard = (&device as &dyn Any).downcast_ref::<VirtualKeyboardDevice>();
+        let pressed = event.state() == KeyState::Pressed;
 
         // Restore the real keymap if required (the virtual keyboard uses its own one).
+        //
+        // Only switch between physical keyboards on presses: a release works with any keymap, since
+        // swapping keymaps keeps the held keys, and switching on releases would just double the
+        // keymap swaps when using two keyboards at once.
         if virtual_keyboard.is_none() {
-            self.restore_configured_keymap();
+            if pressed {
+                let config = device.keyboard_device_config(self);
+                self.activate_keyboard_keymap(config);
+            } else {
+                self.restore_configured_keymap();
+            }
         }
 
         // Keys from a virtual keyboard are tracked separately from the physical
@@ -481,7 +521,6 @@ impl State {
 
         let serial = SERIAL_COUNTER.next_serial();
         let time = Event::time(&event);
-        let pressed = event.state() == KeyState::Pressed;
 
         // Stop bind key repeat on any release. This won't work 100% correctly in cases like:
         // 1. Press Mod
@@ -5187,6 +5226,23 @@ fn find_bind<'a, I: Iterator<Item = &'a Bind> + Clone>(
     keys.find_map(|key| find(bindings.clone(), key))
 }
 
+/// Finds the config of a keyboard by its name, or by the name of another device in its libinput
+/// device group.
+pub fn find_keyboard_device_config<'a>(
+    config: &niri_config::input::Keyboard,
+    name: &str,
+    group: impl IntoIterator<Item = &'a str>,
+) -> Option<usize> {
+    config.device_index(name).or_else(|| {
+        let group = group
+            .into_iter()
+            .filter_map(|name| config.device_index(name));
+        group
+            .filter(|idx| config.devices[*idx].match_device_group)
+            .min()
+    })
+}
+
 fn trigger_matches_keysym(trigger: Trigger, key: Keysym, mod_key: ModKey) -> bool {
     match trigger {
         Trigger::CompositorMod => mod_key.matches_keysym(key),
@@ -6454,5 +6510,32 @@ mod tests {
             &close_bind(BoundAction::Release(Action::CloseWindow)),
             false
         ));
+    }
+
+    #[test]
+    fn keyboard_device_config_in_group() {
+        let config = Config::parse_mem(
+            r#"
+            input {
+                keyboard "Moonlander" { match-device-group; }
+                keyboard "Planck" {}
+                keyboard "Moonlander Consumer Control" {}
+            }
+            "#,
+        )
+        .unwrap();
+        let config = &config.input.keyboard;
+
+        let find = |name, group: &[&str]| find_keyboard_device_config(config, name, group.to_vec());
+
+        // A device's own config wins over its group's.
+        let group = ["Moonlander", "Moonlander System Control"];
+        assert_eq!(find("Moonlander System Control", &group), Some(0));
+        let group = ["Moonlander", "Moonlander Consumer Control"];
+        assert_eq!(find("Moonlander Consumer Control", &group), Some(2));
+
+        // Only configs with match-device-group apply to the group.
+        let group = ["Planck", "Planck Consumer Control"];
+        assert_eq!(find("Planck Consumer Control", &group), None);
     }
 }

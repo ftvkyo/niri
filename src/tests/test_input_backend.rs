@@ -5,13 +5,25 @@ use smithay::backend::input::{
 use smithay::output::Output;
 
 use crate::input::backend_ext::NiriInputDevice;
+use crate::input::find_keyboard_device_config;
 
 pub struct TestInputBackend;
 
-#[derive(PartialEq, Eq, Hash)]
-pub struct TestInputDevice;
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct TestInputDevice {
+    pub name: String,
+}
+
+impl Default for TestInputDevice {
+    fn default() -> Self {
+        Self {
+            name: String::from("test input device"),
+        }
+    }
+}
 
 pub struct TestKeyboardKeyEvent {
+    pub device: TestInputDevice,
     pub time: InputTime,
     pub code: Keycode,
     pub state: KeyState,
@@ -57,7 +69,7 @@ impl Device for TestInputDevice {
     }
 
     fn name(&self) -> String {
-        String::from("test input device")
+        self.name.clone()
     }
 
     fn has_capability(&self, capability: DeviceCapability) -> bool {
@@ -77,6 +89,11 @@ impl NiriInputDevice for TestInputDevice {
     fn output(&self, _state: &crate::niri::State) -> Option<Output> {
         None
     }
+
+    fn keyboard_device_config(&self, state: &crate::niri::State) -> Option<usize> {
+        let config = state.niri.config.borrow();
+        find_keyboard_device_config(&config.input.keyboard, &self.name, [])
+    }
 }
 
 impl Event<TestInputBackend> for TestKeyboardKeyEvent {
@@ -85,7 +102,7 @@ impl Event<TestInputBackend> for TestKeyboardKeyEvent {
     }
 
     fn device(&self) -> <TestInputBackend as InputBackend>::Device {
-        TestInputDevice
+        self.device.clone()
     }
 }
 

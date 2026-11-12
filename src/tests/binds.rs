@@ -9,7 +9,7 @@ use wayland_client::protocol::wl_surface::WlSurface;
 
 use crate::tests::client::ClientId;
 use crate::tests::fixture::Fixture;
-use crate::tests::test_input_backend::{TestInputBackend, TestKeyboardKeyEvent};
+use crate::tests::test_input_backend::{TestInputBackend, TestInputDevice, TestKeyboardKeyEvent};
 
 #[derive(Clone, Copy)]
 enum Op {
@@ -174,6 +174,7 @@ fn run_f(f: &mut Fixture, id: ClientId, surface: &WlSurface, input: &str) -> Str
                 let state = f.niri_state();
                 state.process_input_event(InputEvent::<TestInputBackend>::Keyboard {
                     event: TestKeyboardKeyEvent {
+                        device: Default::default(),
                         time: InputTime::from_micros(0),
                         code,
                         state: key_state,
@@ -2472,4 +2473,99 @@ fn redundant_modifier_binds() {
         run("binds { Alt+Q { release { close-window; }; }; }", input),
         run("binds { Alt+Alt+Q { release { close-window; }; }; }", input)
     );
+}
+
+#[test]
+fn keyboard_devices() {
+    let c = r#"
+    input {
+        keyboard {
+            xkb {
+                layout "us,ru"
+                options "grp:lalt_toggle"
+            }
+        }
+
+        keyboard "Colemak" {
+            xkb {
+                variant "colemak,"
+            }
+        }
+    }
+
+    binds {
+        R { close-window; }
+    }
+    "#;
+    let (mut f, id, _) = set_up(c);
+
+    // Returns the active layout and the number of triggered binds after the key.
+    let mut key = |device: &str, code: u32, key_state: KeyState| {
+        let state = f.niri_state();
+        state.process_input_event(InputEvent::<TestInputBackend>::Keyboard {
+            event: TestKeyboardKeyEvent {
+                device: TestInputDevice {
+                    name: String::from(device),
+                },
+                time: InputTime::from_micros(0),
+                code: Keycode::new(code),
+                state: key_state,
+                count: 1,
+            },
+        });
+        f.roundtrip(id);
+
+        let state = f.niri_state();
+        let keyboard = state.niri.seat.get_keyboard().unwrap();
+        let layout = keyboard.with_xkb_state(state, |context| {
+            let xkb = context.xkb().lock().unwrap();
+            let layout = xkb.active_layout();
+            format!("{} {}", layout.0, xkb.layout_name(layout))
+        });
+        (layout, f.niri().test_action_count)
+    };
+
+    use KeyState::{Pressed, Released};
+    const AC02: u32 = 39;
+    const LALT: u32 = 64;
+    const CAPS: u32 = 66;
+
+    // The key types s on QWERTY, and r on Colemak, where it triggers the bind.
+    assert_eq!(key("Laptop", AC02, Pressed), ("0 English (US)".into(), 0));
+    assert_eq!(key("Laptop", AC02, Released), ("0 English (US)".into(), 0));
+    assert_eq!(
+        key("Colemak", AC02, Pressed),
+        ("0 English (Colemak)".into(), 1)
+    );
+    assert_eq!(
+        key("Colemak", AC02, Released),
+        ("0 English (Colemak)".into(), 1)
+    );
+
+    // The layout is shared between keyboards.
+    assert_eq!(key("Colemak", LALT, Pressed), ("1 Russian".into(), 1));
+    assert_eq!(key("Colemak", LALT, Released), ("1 Russian".into(), 1));
+    assert_eq!(key("Laptop", AC02, Pressed), ("1 Russian".into(), 1));
+
+    // Releases don't switch keyboards.
+    assert_eq!(
+        key("Colemak", LALT, Pressed),
+        ("0 English (Colemak)".into(), 1)
+    );
+    assert_eq!(
+        key("Laptop", AC02, Released),
+        ("0 English (Colemak)".into(), 1)
+    );
+    assert_eq!(
+        key("Colemak", LALT, Released),
+        ("0 English (Colemak)".into(), 1)
+    );
+
+    // Caps Lock is shared too.
+    key("Laptop", CAPS, Pressed);
+    key("Laptop", CAPS, Released);
+    key("Colemak", AC02, Pressed);
+
+    let keyboard = f.niri().seat.get_keyboard().unwrap();
+    assert!(keyboard.modifier_state().caps_lock);
 }

@@ -443,6 +443,7 @@ fn focus_on_type_in_overview() {
 
         state.process_input_event(InputEvent::<TestInputBackend>::Keyboard {
             event: TestKeyboardKeyEvent {
+                device: Default::default(),
                 time: InputTime::from_micros(0),
                 code,
                 state: key_state,

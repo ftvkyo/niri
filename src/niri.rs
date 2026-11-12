@@ -295,6 +295,8 @@ pub struct Niri {
     pub devices: HashSet<input::Device>,
     pub tablets: HashMap<input::Device, TabletData>,
     pub touch: HashSet<input::Device>,
+    /// Keyboards with their own config, as an index into `input.keyboard.devices`.
+    pub keyboard_device_configs: HashMap<input::Device, usize>,
 
     /// Output capture sessions. Kept out of the protocol state because each one needs a damage
     /// tracker and is handled in the redraw loop.
@@ -386,13 +388,17 @@ pub struct Niri {
     /// only gets activated on the next key/modifier event from the virtual
     /// keyboard.
     pub virtual_keyboard_keymap: Option<VirtualKeyboardKeymap>,
-    /// Configured (non-virtual-keyboard) keymap as XKB_KEYMAP_FORMAT_TEXT_V1.
+    /// Physical keyboard config whose keymap is the configured one, as an index into
+    /// `input.keyboard.devices`, or `None` for the fallback config.
+    pub keyboard_config: Option<usize>,
+    /// Configured (non-virtual-keyboard) keymaps as XKB_KEYMAP_FORMAT_TEXT_V1, by physical
+    /// keyboard config.
     ///
     /// Computed lazily from the seat while no virtual keyboard keymap is
-    /// active, and cleared whenever the configured keymap changes. Used to
-    /// compare against virtual keyboard keymaps, and to switch back to it
+    /// active, and cleared whenever the configured keymaps change. Used to
+    /// compare against virtual keyboard keymaps, and to switch back to them
     /// afterwards without going through the config again.
-    pub configured_keymap: Option<KeymapFile>,
+    pub configured_keymaps: HashMap<Option<usize>, KeymapFile>,
 
     pub cursor_manager: CursorManager,
     pub cursor_texture_cache: CursorTextureCache,
@@ -1583,7 +1589,7 @@ impl State {
             .set_keymap_from_string(self, keymap)
             .context("failed to set keymap")?;
         self.niri.virtual_keyboard_keymap = None;
-        self.niri.configured_keymap = None;
+        self.forget_configured_keymap();
         self.restore_keyboard_state(restore);
 
         Ok(())
@@ -1598,16 +1604,34 @@ impl State {
         }
     }
 
-    pub fn set_xkb_config(&mut self, xkb: XkbConfig) {
+    /// Returns whether the keymap was set.
+    pub fn set_xkb_config(&mut self, xkb: XkbConfig) -> bool {
         let keyboard = self.niri.seat.get_keyboard().unwrap();
         let restore = self.keyboard_state_to_restore();
         if let Err(err) = keyboard.set_xkb_config(self, xkb) {
             warn!("error updating xkb config: {err:?}");
-            return;
+            return false;
         }
         self.niri.virtual_keyboard_keymap = None;
-        self.niri.configured_keymap = None;
+        self.forget_configured_keymap();
         self.restore_keyboard_state(restore);
+        true
+    }
+
+    /// Forgets the configured keymap of the current physical keyboard after it changes.
+    pub fn forget_configured_keymap(&mut self) {
+        let config = self.niri.keyboard_config;
+        self.niri.configured_keymaps.remove(&config);
+    }
+
+    /// Forgets the configured keymaps after their settings change.
+    ///
+    /// The current one stays until a new one replaces it, in case that fails to load.
+    fn forget_other_configured_keymaps(&mut self) {
+        let current = self.niri.keyboard_config;
+        self.niri
+            .configured_keymaps
+            .retain(|config, _| *config == current);
     }
 
     /// Returns the keyboard state to restore after replacing the seat's keymap (which resets it).
@@ -1693,31 +1717,88 @@ impl State {
         }
     }
 
-    /// Loads the configured keymap (xkb file, xkb config, or locale1's) onto the seat, replacing a
-    /// virtual keyboard's if there is one.
+    /// Loads the configured keymap of the current physical keyboard (xkb file, xkb config, or
+    /// locale1's) onto the seat, replacing a virtual keyboard's if there is one.
     pub fn load_configured_keymap(&mut self) {
-        let mut xkb = self.niri.config.borrow().input.keyboard.xkb.clone();
-        let mut set_xkb_config = true;
+        self.set_configured_keymap();
+        self.ipc_keyboard_layouts_changed();
+    }
+
+    /// Returns whether the keymap was set.
+    fn set_configured_keymap(&mut self) -> bool {
+        let mut xkb = self.configured_xkb();
 
         if let Some(XkbFile(Some(keymap))) = xkb.file.take() {
-            if let Err(err) = self.set_xkb_file_content(keymap) {
-                warn!("error loading xkb_file: {err:?}");
-            } else {
-                set_xkb_config = false;
+            match self.set_xkb_file_content(keymap) {
+                Ok(()) => return true,
+                Err(err) => warn!("error loading xkb_file: {err:?}"),
             }
         }
 
-        if set_xkb_config {
-            // If xkb is unset in the niri config, use settings from locale1.
-            if xkb == Xkb::default() {
-                trace!("using xkb from locale1");
-                xkb = self.niri.xkb_from_locale1.clone().unwrap_or_default();
-            }
+        self.set_xkb_config(xkb.to_xkb_config())
+    }
 
-            self.set_xkb_config(xkb.to_xkb_config());
+    /// Returns the xkb settings of the current physical keyboard.
+    fn configured_xkb(&self) -> Xkb {
+        let config = self.niri.config.borrow();
+        let keyboard = &config.input.keyboard;
+
+        // If xkb is unset in the niri config, use settings from locale1.
+        let mut xkb = keyboard.xkb.clone();
+        if xkb == Xkb::default() {
+            trace!("using xkb from locale1");
+            xkb = self.niri.xkb_from_locale1.clone().unwrap_or_default();
         }
 
-        self.ipc_keyboard_layouts_changed();
+        let device = self.niri.keyboard_config;
+        match device.and_then(|idx| keyboard.devices.get(idx)) {
+            Some(device) => device.xkb(&xkb),
+            None => xkb,
+        }
+    }
+
+    /// Makes the keymap of this physical keyboard the configured one, and activates it.
+    ///
+    /// Keyboards share the layout and the lock state, so they carry over to the new keymap.
+    pub fn activate_keyboard_keymap(&mut self, config: Option<usize>) {
+        if self.niri.keyboard_config == config {
+            self.restore_configured_keymap();
+            return;
+        }
+
+        let saved = match &self.niri.virtual_keyboard_keymap {
+            Some(active) => active.saved,
+            None => {
+                // Remember the outgoing keymap to switch back to it without the config.
+                self.configured_keymap();
+                self.current_keyboard_state()
+            }
+        };
+
+        let previous = mem::replace(&mut self.niri.keyboard_config, config);
+
+        let keyboard = self.niri.seat.get_keyboard().unwrap();
+        let keymap = self.niri.configured_keymaps.get(&config);
+        let restored = keymap.cloned().is_some_and(|keymap| {
+            keyboard
+                .set_keymap_from_keymap_file(self, keymap)
+                .inspect_err(|err| warn!("error setting configured keymap: {err:?}"))
+                .is_ok()
+        });
+
+        if !restored && !self.set_configured_keymap() {
+            // Use the previous keymap for this keyboard rather than retrying on every key.
+            self.niri.keyboard_config = previous;
+            self.restore_configured_keymap();
+            if let Some(keymap) = self.niri.configured_keymaps.get(&previous).cloned() {
+                self.niri.configured_keymaps.insert(config, keymap);
+            }
+            return;
+        }
+
+        self.niri.virtual_keyboard_keymap = None;
+        self.restore_keyboard_state(saved);
+        self.ipc_refresh_keyboard_layouts();
     }
 
     pub fn reload_config(&mut self, config: Result<Config, ()>) {
@@ -1794,6 +1875,14 @@ impl State {
 
         // We need &mut self to reload the xkb config, so just store it here.
         if config.input.keyboard.xkb != old_config.input.keyboard.xkb {
+            reload_xkb = true;
+        }
+
+        // Device configs are referenced by index, so start over with the fallback one.
+        let reload_keyboard_devices =
+            config.input.keyboard.devices != old_config.input.keyboard.devices;
+        if reload_keyboard_devices {
+            self.niri.keyboard_config = None;
             reload_xkb = true;
         }
 
@@ -1931,8 +2020,13 @@ impl State {
         // Release the borrow.
         drop(old_config);
 
+        if reload_keyboard_devices {
+            self.refresh_keyboard_device_configs();
+        }
+
         // Now with a &mut self we can reload the xkb config.
         if reload_xkb {
+            self.forget_other_configured_keymaps();
             self.load_configured_keymap();
         }
 
@@ -2552,7 +2646,7 @@ impl State {
         let Locale1ToNiri::XkbChanged(xkb) = msg;
 
         trace!("locale1 xkb settings changed: {xkb:?}");
-        let xkb = self.niri.xkb_from_locale1.insert(xkb);
+        self.niri.xkb_from_locale1 = Some(xkb);
 
         {
             let config = self.niri.config.borrow();
@@ -2562,9 +2656,9 @@ impl State {
             }
         }
 
-        let xkb = xkb.clone();
-        self.set_xkb_config(xkb.to_xkb_config());
-        self.ipc_keyboard_layouts_changed();
+        // Keyboard device configs are based on the locale1 settings too.
+        self.forget_other_configured_keymaps();
+        self.load_configured_keymap();
     }
 }
 
@@ -2897,6 +2991,7 @@ impl Niri {
             devices: HashSet::new(),
             tablets: HashMap::new(),
             touch: HashSet::new(),
+            keyboard_device_configs: HashMap::new(),
 
             compositor_state,
             xdg_shell_state,
@@ -2961,7 +3056,8 @@ impl Niri {
             keyboard_shortcuts_inhibiting_surfaces: HashMap::new(),
             xkb_from_locale1: None,
             virtual_keyboard_keymap: None,
-            configured_keymap: None,
+            keyboard_config: None,
+            configured_keymaps: HashMap::new(),
             cursor_manager,
             cursor_texture_cache: Default::default(),
             cursor_shape_manager_state,
