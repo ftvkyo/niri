@@ -4,7 +4,7 @@ In this section you can configure input devices like keyboard and mouse, and som
 
 There's a section for each device type: `keyboard`, `touchpad`, `mouse`, `trackpoint`, `trackball`, `tablet`, `touch`.
 Settings in those sections will apply to every device of that type.
-Currently, there's no way to configure specific devices individually (but that is planned).
+Currently, only [keyboards](#specific-keyboards) can be configured individually (but other devices are planned).
 
 All settings at a glance:
 
@@ -220,6 +220,60 @@ input {
     }
 }
 ```
+
+#### Specific Keyboards
+
+<sup>Since: next release</sup>
+
+You can set different xkb settings for a specific keyboard by adding a `keyboard` section with its name.
+Typing on that keyboard switches to its keymap, and typing on another keyboard switches back.
+
+```kdl
+input {
+    keyboard {
+        xkb {
+            layout "us,ru"
+            options "grp:caps_toggle"
+        }
+    }
+
+    keyboard "ZSA Technology Labs Moonlander Mark I" {
+        xkb {
+            variant "colemak_dh_ortho,"
+        }
+    }
+}
+```
+
+The `xkb` settings that a keyboard doesn't set come from the general `keyboard` section.
+So, in this example, the Moonlander types Colemak-DH and Russian, and switches between them with Caps Lock, while other keyboards type US QWERTY and Russian.
+A keyboard with any `xkb` settings of its own doesn't use the `file` from the general section.
+
+Only `xkb` can be set for a specific keyboard.
+Other settings are shared between all keyboards, and so are the current layout, Caps Lock and Num Lock.
+Since the current layout is shared, list the layouts in the same order for every keyboard, like in the example.
+
+The names are libinput device names, matched ignoring case.
+You can find them with `sudo libinput list-devices`.
+
+One physical keyboard often shows up as several devices, like `ZSA Technology Labs Moonlander Mark I Consumer Control` for the media keys.
+Pressing a key on a device without its own settings switches back to the general keymap.
+Set `match-device-group` to apply the settings to the other devices of the same physical keyboard as well (as grouped by libinput), unless they have their own settings.
+
+```kdl
+input {
+    keyboard "ZSA Technology Labs Moonlander Mark I" {
+        match-device-group
+
+        xkb {
+            variant "colemak_dh_ortho,"
+        }
+    }
+}
+```
+
+Key bindings follow the keymap of the keyboard that you type on.
+To bind the same physical key on every keyboard, use a [keycode](./Configuration:-Key-Bindings.md) as the trigger.
 
 ### Pointing Devices
 

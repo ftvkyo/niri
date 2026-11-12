@@ -106,6 +106,22 @@ binds {
 > So to bind <kbd>&lt;</kbd> on US QWERTY you could use only `Mod+Shift+Comma` (since <kbd>,</kbd> is the unshifted version of that key).
 > This is no longer the case: you can spell out either version of the key.
 
+<sup>Since: next release</sup> The trigger key can also be a physical key, written as `Keycode:` followed by its XKB keycode.
+These binds don't depend on the layout, so they stay on the same key with every layout and [every keyboard](./Configuration:-Input.md#specific-keyboards).
+They have priority over binds that spell out a key name.
+
+```kdl
+binds {
+    // The key in place of W on US QWERTY.
+    Mod+Keycode:25 { focus-workspace-up; }
+}
+```
+
+To find a keycode, look at `key:` in the `wev` output above, for example, 113 for the left arrow.
+Note that `evtest` and `libinput debug-events` show evdev keycodes instead, which are smaller by 8.
+
+Pressing a modifier key holds its modifier, so a keycode bind on a modifier key needs to spell it out, for example, `Ctrl+Keycode:37` for the left Ctrl.
+
 <sup>Since: 0.1.8</sup> Binds will repeat by default (i.e. holding down a bind will make it trigger repeatedly).
 You can disable that for specific binds with `repeat=false`:
 
